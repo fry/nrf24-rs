@@ -9,7 +9,7 @@ use ufmt::{uDebug, uWrite, Formatter};
 pub struct Status(u8);
 
 /// Wrapper around the FIFO status.
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Copy, Clone, Eq, PartialEq)]
 pub struct FIFOStatus(u8);
 
 impl Status {
@@ -43,9 +43,7 @@ impl Status {
     pub fn data_pipe_available(&self) -> Option<DataPipe> {
         match (self.0 >> 1) & 0b111 {
             x @ 0..=5 => Some(x.into()),
-            6 => panic!(),
-            7 => None,
-            _ => unreachable!(), // because we AND the value
+            _ => None,
         }
     }
     /// Indicates whether the transmission queue is full or not.
@@ -150,6 +148,17 @@ impl core::fmt::Debug for Status {
             let s = s.field("Transmission FIFO full", &self.tx_full());
             s.finish()
         }
+    }
+}
+
+impl core::fmt::Debug for FIFOStatus {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Status")
+            .field("tx_full", &self.tx_full())
+            .field("tx_empty", &self.tx_empty())
+            .field("rx_full", &self.rx_full())
+            .field("rx_empty", &self.rx_empty())
+            .finish()
     }
 }
 

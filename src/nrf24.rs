@@ -5,15 +5,11 @@ use crate::config::{
     PayloadSize,
 };
 use crate::error::TransferError;
-use crate::hal::blocking::{
-    delay::DelayMs,
-    delay::DelayUs,
-    spi::{Transfer, Write},
-};
+use crate::hal::{delay::DelayNs, spi::SpiBus};
 
-use crate::hal::digital::v2::OutputPin;
+use crate::hal::digital::OutputPin;
 use crate::register_acces::{Instruction, Register};
-use crate::status::{Interrupts, Status};
+use crate::status::{FIFOStatus, Interrupts, Status};
 use crate::MAX_PAYLOAD_SIZE;
 use core::fmt;
 
@@ -48,7 +44,7 @@ pub struct Nrf24l01<SPI, CE, NCS> {
 
 impl<SPI, CE, NCS, SPIErr, PinErr> Nrf24l01<SPI, CE, NCS>
 where
-    SPI: Transfer<u8, Error = SPIErr> + Write<u8, Error = SPIErr>,
+    SPI: SpiBus<Error = SPIErr>,
     NCS: OutputPin<Error = PinErr>,
     CE: OutputPin<Error = PinErr>,
 {
@@ -96,7 +92,7 @@ where
         config: NrfConfig,
     ) -> Result<Self, TransferError<SPIErr, PinErr>>
     where
-        D: DelayMs<u8>,
+        D: DelayNs,
     {
         let mut chip = Nrf24l01 {
             spi,
@@ -139,7 +135,7 @@ where
             chip.enable_crc(encoding_scheme)?;
         }
 
-        chip.config_reg = chip.read_register(Register::CONFIG)?;
+        chip.config_reg = chip.read_register(Register::CONFIG)?.1;
 
         chip.power_up(delay)?;
 
@@ -158,7 +154,7 @@ where
     /// }
     /// ```
     pub fn is_connected(&mut self) -> Result<bool, TransferError<SPIErr, PinErr>> {
-        let setup = self.read_register(Register::SETUP_AW)?;
+        let setup = self.read_register(Register::SETUP_AW)?.1;
         if (1..=3).contains(&setup) {
             Ok(true)
         } else {
@@ -196,7 +192,7 @@ where
         }
 
         // Enable corresponding RX Addr
-        let old_reg = self.read_register(Register::EN_RXADDR)?; // Read old value
+        let old_reg = self.read_register(Register::EN_RXADDR)?.1; // Read old value
         self.write_register(Register::EN_RXADDR, old_reg | (1 << pipe.pipe()))?; // Update
 
         Ok(())
@@ -411,7 +407,7 @@ where
     ///
     /// Will clear all interrupt flags after write.
     /// Returns an error when max retries have been reached.
-    pub fn write<D: DelayUs<u8>>(
+    pub fn write<D: DelayNs>(
         &mut self,
         delay: &mut D,
         buf: &[u8],
@@ -498,8 +494,9 @@ where
     /// assert_eq!(retries_config.count(), 15);
     /// ```
     pub fn retries(&mut self) -> Result<AutoRetransmission, TransferError<SPIErr, PinErr>> {
-        self.read_register(Register::SETUP_RETR)
-            .map(AutoRetransmission::from_register)
+        Ok(AutoRetransmission::from_register(
+            self.read_register(Register::SETUP_RETR)?.1,
+        ))
     }
 
     /// Set the frequency channel nRF24L01 operates on.
@@ -527,7 +524,7 @@ where
     /// assert_eq!(chip.channel()?, 76);
     /// ```
     pub fn channel(&mut self) -> Result<u8, TransferError<SPIErr, PinErr>> {
-        self.read_register(Register::RF_CH)
+        Ok(self.read_register(Register::RF_CH)?.1)
     }
 
     /// Set the address width, saturating values above or below allowed range.
@@ -558,7 +555,8 @@ where
     /// assert_eq!(chip.data_rate()?, DataRate::R2Mbps);
     /// ```
     pub fn data_rate(&mut self) -> Result<DataRate, TransferError<SPIErr, PinErr>> {
-        self.read_register(Register::RF_SETUP).map(DataRate::from)
+        self.read_register(Register::RF_SETUP)
+            .map(|s| DataRate::from(s.1))
     }
 
     /// Returns the current power amplifier level as a [`PALevel`] enum.
@@ -571,7 +569,8 @@ where
     /// assert_eq!(chip.power_amp_level()?, PALevel::Min);
     /// ```
     pub fn power_amp_level(&mut self) -> Result<PALevel, TransferError<SPIErr, PinErr>> {
-        self.read_register(Register::RF_SETUP).map(PALevel::from)
+        self.read_register(Register::RF_SETUP)
+            .map(|s| PALevel::from(s.1))
     }
 
     /// Flush transmission FIFO, used in TX mode.
@@ -612,7 +611,7 @@ where
     pub fn crc_encoding_scheme(
         &mut self,
     ) -> Result<Option<EncodingScheme>, TransferError<SPIErr, PinErr>> {
-        let config_reg = self.read_register(Register::CONFIG)?;
+        let config_reg = self.read_register(Register::CONFIG)?.1;
         if config_reg & (1 << 3) == 1 << 3 {
             return Ok(Some(EncodingScheme::from(config_reg)));
         }
@@ -648,7 +647,7 @@ where
                 if self.payload_size == PayloadSize::Dynamic {
                     // currently dynamic payload enabled
                     // Disable dynamic payloads
-                    let feature = self.read_register(Register::FEATURE)?;
+                    let feature = self.read_register(Register::FEATURE)?.1;
                     self.write_register(Register::CONFIG, feature & !(1 << 2))?;
                 }
 
@@ -660,7 +659,7 @@ where
                 self.write_register(Register::RX_PW_P5, payload_size)?;
             }
             PayloadSize::Dynamic => {
-                let feature = self.read_register(Register::FEATURE)?;
+                let feature = self.read_register(Register::FEATURE)?.1;
                 self.write_register(Register::CONFIG, feature | (1 << 2))?;
                 self.write_register(Register::DYNPD, 0b0001_1111)?; // enable on all pipes
             }
@@ -697,7 +696,7 @@ where
     /// ```
     pub fn power_up<D>(&mut self, delay: &mut D) -> Result<(), TransferError<SPIErr, PinErr>>
     where
-        D: DelayMs<u8>,
+        D: DelayNs,
     {
         // if not powered up, power up and wait for the radio to initialize
         if !self.is_powered_up() {
@@ -733,6 +732,12 @@ where
     /// Reads the status register from device. See [`Status`].
     pub fn status(&mut self) -> Result<Status, TransferError<SPIErr, PinErr>> {
         self.send_command(Instruction::NOP)
+    }
+
+    pub fn fifo_status(&mut self) -> Result<(Status, FIFOStatus), TransferError<SPIErr, PinErr>> {
+        let (status, reg) = self.read_register(Register::FIFO_STATUS)?;
+
+        Ok((status, FIFOStatus::from(reg)))
     }
 
     /// Resets the following flags in the status register:
@@ -792,19 +797,19 @@ where
         let crc_encoding_scheme = self.crc_encoding_scheme()?;
         let retry_setup = self.retries()?;
 
-        let config_reg = self.read_register(Register::CONFIG)?;
+        let config_reg = self.read_register(Register::CONFIG)?.1;
         let mode = if config_reg & 1 == 0 {
             Mode::TransmissionMode
         } else {
             Mode::ReceiverMode
         };
 
-        let addr_width = AddressWidth::from_register(self.read_register(Register::SETUP_AW)?);
+        let addr_width = AddressWidth::from_register(self.read_register(Register::SETUP_AW)?.1);
 
         let tx_addr = self.read_tx()?;
         let rx1_addr = self.read_rx()?;
-        let auto_ack = self.read_register(Register::EN_AA)?;
-        let open_read_pipes = self.read_register(Register::EN_RXADDR)?;
+        let auto_ack = self.read_register(Register::EN_AA)?.1;
+        let open_read_pipes = self.read_register(Register::EN_RXADDR)?.1;
 
         Ok(crate::config::DebugInfo {
             channel,
@@ -879,12 +884,17 @@ where
         Ok(())
     }
 
-    fn read_register(&mut self, register: Register) -> Result<u8, TransferError<SPIErr, PinErr>> {
+    fn read_register(
+        &mut self,
+        register: Register,
+    ) -> Result<(Status, u8), TransferError<SPIErr, PinErr>> {
         self.tx_buf[..2].copy_from_slice(&[Instruction::RR.opcode() | register.addr(), 0]);
         self.set_ncs_low()?;
-        let reg = self.spi_transfer_tx_buf(2)?[1];
+        let buf = self.spi_transfer_tx_buf(2)?;
+        let reg = buf[1];
+        let status = Status::from(buf[0]);
         self.set_ncs_high()?;
-        Ok(reg)
+        Ok((status, reg))
     }
 
     fn read_tx(&mut self) -> Result<[u8; 5], TransferError<SPIErr, PinErr>> {
@@ -959,33 +969,12 @@ where
     }
 }
 
-/// Helper function for transfering data over the SPI bus.
-/// Returns the error enum defined in this crate, so the rest of the code can use the
-/// `?` operator.
-impl<SPI, CE, NCS, SPIErr> Nrf24l01<SPI, CE, NCS>
-where
-    SPI: Transfer<u8, Error = SPIErr>,
-{
-    /// *NOTE*
-    /// Make sure the data to be transfered is copied to the TX Buf before calling this function.
-    /// Because the first byte always has to be the command, the `len` argument
-    /// is the inclusive length.
-    fn spi_transfer_tx_buf<PinErr>(
-        &mut self,
-        len: usize,
-    ) -> Result<&[u8], TransferError<SPIErr, PinErr>> {
-        self.spi
-            .transfer(&mut self.tx_buf[..=len])
-            .map_err(TransferError::Spi)
-    }
-}
-
 /// Helper function for writing data over the SPI bus.
 /// Returns the error enum defined in this crate, so the rest of the code can use the
 /// `?` operator.
 impl<SPI, CE, NCS, SPIErr> Nrf24l01<SPI, CE, NCS>
 where
-    SPI: Write<u8, Error = SPIErr>,
+    SPI: SpiBus<Error = SPIErr>,
 {
     /// *NOTE*
     /// Make sure the data to be written is copied to the TX Buf before calling this function.
@@ -998,6 +987,21 @@ where
         self.spi
             .write(&self.tx_buf[..=len])
             .map_err(TransferError::Spi)
+    }
+
+    /// *NOTE*
+    /// Make sure the data to be transfered is copied to the TX Buf before calling this function.
+    /// Because the first byte always has to be the command, the `len` argument
+    /// is the inclusive length.
+    fn spi_transfer_tx_buf<PinErr>(
+        &mut self,
+        len: usize,
+    ) -> Result<&[u8], TransferError<SPIErr, PinErr>> {
+        self.spi
+            .transfer_in_place(&mut self.tx_buf[..=len])
+            .map_err(TransferError::Spi)?;
+
+        Ok(&self.tx_buf[..=len])
     }
 }
 

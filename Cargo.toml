@@ -6,7 +6,13 @@ repository = "https://github.com/TomasVanRoose/RF24-rs"
 license = "MIT OR Apache-2.0"
 
 description = "Platform agnostic Rust driver for the nRF24L01 2.4 GHz transciever for wireless communication between embedded devices."
-keywords = ["driver", "nRF24L01", "wireless", "embedded-hal", "embedded-hal-driver"]
+keywords = [
+    "driver",
+    "nRF24L01",
+    "wireless",
+    "embedded-hal",
+    "embedded-hal-driver",
+]
 categories = ["embedded", "hardware-support", "no-std"]
 
 homepage = "https://github.com/TomasVanRoose/RF24-rs"
@@ -14,14 +20,13 @@ readme = "README.md"
 edition = "2018"
 rust = "1.50.0"
 
-exclude = [
-    "examples/",
-]
+exclude = ["examples/"]
 
 [features]
 micro-fmt = ["ufmt"]
 
 [dependencies]
-embedded-hal = "0.2"
+embedded-hal = "1.0.0"
+embedded-io = "0.6.1"
 # Feature dependencies
-ufmt = { version = "0.1", optional = true }
+ufmt = { version = "0.2", optional = true }
